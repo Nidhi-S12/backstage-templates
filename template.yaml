@@ -1,0 +1,70 @@
+apiVersion: backstage.io/v1alpha1
+kind: Template
+metadata:
+  name: ec2-nodejs-app
+  title: Node.js App on AWS EC2
+  description: Scaffold a Node.js application and deploy it to an AWS EC2 instance
+spec:
+  owner: user:default/guest
+  type: service
+  parameters:
+    - title: Application Details
+      required:
+        - component_id
+        - owner
+      properties:
+        component_id:
+          title: Component ID
+          type: string
+          description: Unique identifier for the application
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the application
+        repo_url:
+          title: Repository URL
+          type: string
+          description: URL of the Git repository
+    - title: AWS EC2 Configuration
+      required:
+        - instance_type
+        - ami_id
+      properties:
+        instance_type:
+          title: EC2 Instance Type
+          type: string
+          description: AWS EC2 instance type (e.g., t2.micro)
+          default: t2.micro
+        ami_id:
+          title: AMI ID
+          type: string
+          description: Amazon Machine Image ID (e.g., ami-0c55b159cbfafe1f0 for Amazon Linux 2)
+  steps:
+    - id: template
+      name: Create Application
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          component_id: ${{ parameters.component_id }}
+          owner: ${{ parameters.owner }}
+          repo_url: ${{ parameters.repo_url }}
+    - id: publish
+      name: Publish to Git
+      action: publish:github
+      input:
+        allowedHosts: ["github.com"]
+        repoUrl: ${{ parameters.repo_url }}
+        description: Node.js application deployed on AWS EC2
+    - id: provision-ec2
+      name: Provision EC2 Instance
+      action: custom:provision-ec2
+      input:
+        instance_type: ${{ parameters.instance_type }}
+        ami_id: ${{ parameters.ami_id }}
+    - id: register
+      name: Register in Catalog
+      action: catalog:register
+      input:
+        repoUrl: ${{ parameters.repo_url }}
+        catalogInfoPath: /catalog-info.yaml
