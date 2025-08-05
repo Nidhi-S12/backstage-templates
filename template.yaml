@@ -1,34 +1,41 @@
 apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
-  name: deploy-nodejs-to-ec2
-  title: Deploy Node.js App to AWS EC2
-  description: Deploy an existing Node.js application to a new AWS EC2 instance
+  name: deploy-nodejs-to-ec2-complete
+  title: Deploy Node.js App to AWS EC2 (Complete)
+  description: Create a deployment repository with GitHub Actions to provision EC2 and deploy your Node.js app
   tags:
     - nodejs
     - aws
     - ec2
     - deployment
+    - github-actions
 spec:
   owner: user:default/guest
   type: service
   parameters:
     - title: Application Information
       required:
-        - app_name
-        - repo_url
+        - deployment_name
+        - source_repo_url
+        - target_repo_name
         - owner
       properties:
-        app_name:
-          title: Application Name
+        deployment_name:
+          title: Deployment Name
           type: string
-          description: Name for your deployed application
+          description: Name for your deployment (will be used for EC2 instance and resources)
           pattern: '^[a-zA-Z0-9-]+$'
-        repo_url:
-          title: Repository URL
+        source_repo_url:
+          title: Source Repository URL
           type: string
           description: URL of your existing Node.js application repository
           pattern: '^https://github\.com/[^/]+/[^/]+$'
+        target_repo_name:
+          title: New Repository Name
+          type: string
+          description: Name for the new deployment repository that will be created
+          pattern: '^[a-zA-Z0-9-]+$'
         owner:
           title: Owner
           type: string
@@ -39,10 +46,11 @@ spec:
           type: string
           description: Brief description of your application
           
-    - title: AWS EC2 Configuration
+    - title: AWS Configuration
       required:
         - instance_type
         - region
+        - key_pair_name
       properties:
         instance_type:
           title: EC2 Instance Type
@@ -69,84 +77,105 @@ spec:
         key_pair_name:
           title: Key Pair Name
           type: string
-          description: AWS Key Pair name for SSH access
-          default: my-key-pair
+          description: AWS Key Pair name for SSH access (must exist in your AWS account)
+        availability_zone:
+          title: Availability Zone
+          type: string
+          description: Specific availability zone (e.g., us-east-1a)
+          default: us-east-1a
           
+    - title: Application Configuration
+      properties:
+        node_version:
+          title: Node.js Version
+          type: string
+          description: Node.js version to install
+          default: "18"
+          enum:
+            - "16"
+            - "18"
+            - "20"
+        app_port:
+          title: Application Port
+          type: number
+          description: Port your Node.js app runs on
+          default: 3000
+        environment:
+          title: Environment
+          type: string
+          description: Deployment environment
+          default: production
+          enum:
+            - development
+            - staging
+            - production
+            
   steps:
-    - id: fetch-repo
-      name: Fetch Application Code
+    - id: fetch-source
+      name: Fetch Source Application
       action: fetch:plain
       input:
-        url: ${{ parameters.repo_url }}
+        url: ${{ parameters.source_repo_url }}
         targetPath: ./app
         
-    - id: create-deployment-config
-      name: Create Deployment Configuration
-      action: fs:write
+    - id: fetch-template
+      name: Fetch Deployment Template
+      action: fetch:template
       input:
-        path: deployment-config.json
-        content: |
-          {
-            "appName": "${{ parameters.app_name }}",
-            "repoUrl": "${{ parameters.repo_url }}",
-            "instanceType": "${{ parameters.instance_type }}",
-            "region": "${{ parameters.region }}",
-            "keyPairName": "${{ parameters.key_pair_name }}",
-            "owner": "${{ parameters.owner }}",
-            "description": "${{ parameters.description }}"
-          }
+        url: ./skeleton
+        values:
+          deployment_name: ${{ parameters.deployment_name }}
+          source_repo_url: ${{ parameters.source_repo_url }}
+          target_repo_name: ${{ parameters.target_repo_name }}
+          owner: ${{ parameters.owner }}
+          description: ${{ parameters.description }}
+          instance_type: ${{ parameters.instance_type }}
+          region: ${{ parameters.region }}
+          key_pair_name: ${{ parameters.key_pair_name }}
+          availability_zone: ${{ parameters.availability_zone }}
+          node_version: ${{ parameters.node_version }}
+          app_port: ${{ parameters.app_port }}
+          environment: ${{ parameters.environment }}
           
-    - id: create-catalog-info
-      name: Create Catalog Info
-      action: fs:write
+    - id: publish
+      name: Publish to GitHub
+      action: publish:github
       input:
-        path: catalog-info.yaml
-        content: |
-          apiVersion: backstage.io/v1alpha1
-          kind: Component
-          metadata:
-            name: ${{ parameters.app_name }}
-            description: ${{ parameters.description || 'Node.js application deployed on AWS EC2' }}
-            tags:
-              - nodejs
-              - aws
-              - ec2
-            annotations:
-              github.com/project-slug: ${{ parameters.repo_url | parseRepoUrl | pick('owner') }}/${{ parameters.repo_url | parseRepoUrl | pick('repo') }}
-              aws.amazon.com/instance-type: ${{ parameters.instance_type }}
-              aws.amazon.com/region: ${{ parameters.region }}
-          spec:
-            type: service
-            lifecycle: production
-            owner: ${{ parameters.owner }}
-            system: aws-deployments
-            
-    - id: log-info
-      name: Log Deployment Information
-      action: debug:log
+        allowedHosts: ["github.com"]
+        description: Deployment repository for ${{ parameters.deployment_name }}
+        repoUrl: github.com?repo=${{ parameters.target_repo_name }}&owner=${{ user.entity.metadata.name }}
+        defaultBranch: main
+        gitCommitMessage: 'Initial deployment setup for ${{ parameters.deployment_name }}'
+        
+    - id: register
+      name: Register in Catalog
+      action: catalog:register
       input:
-        message: |
-          🚀 Deployment Configuration:
-          - Application: ${{ parameters.app_name }}
-          - Repository: ${{ parameters.repo_url }}
-          - Instance Type: ${{ parameters.instance_type }}
-          - Region: ${{ parameters.region }}
-          - Owner: ${{ parameters.owner }}
-          
-          Next steps would be:
-          1. Provision EC2 instance in ${{ parameters.region }}
-          2. Clone repository: ${{ parameters.repo_url }}
-          3. Install Node.js dependencies
-          4. Start the application
-          5. Configure security groups and networking
-          
-          Note: EC2 provisioning is not implemented yet - this is a demo template.
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
 
   output:
+    links:
+      - title: Repository
+        url: ${{ steps.publish.output.remoteUrl }}
+      - title: Open in catalog
+        icon: catalog
+        entityRef: ${{ steps.register.output.entityRef }}
     text:
-      - title: Repository URL
-        content: ${{ parameters.repo_url }}
-      - title: Deployment Region
-        content: ${{ parameters.region }}
-      - title: Instance Type
-        content: ${{ parameters.instance_type }}
+      - title: Deployment Repository
+        content: ${{ steps.publish.output.remoteUrl }}
+      - title: Next Steps
+        content: |
+          🚀 Your deployment repository has been created!
+          
+          **To deploy your application:**
+          1. Go to your new repository: ${{ steps.publish.output.remoteUrl }}
+          2. Go to Actions tab
+          3. Run the "Deploy to EC2" workflow
+          4. Your app will be deployed to a new EC2 instance
+          
+          **Repository includes:**
+          - Your application code
+          - GitHub Actions for EC2 provisioning
+          - Terraform configuration
+          - Deployment scripts

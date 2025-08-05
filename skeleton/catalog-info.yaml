@@ -1,0 +1,40 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ${{ values.deployment_name }}
+  description: ${{ values.description | dump }}
+  annotations:
+    github.com/project-slug: ${{ values.target_repo_name }}
+    aws.amazon.com/instance-type: ${{ values.instance_type }}
+    aws.amazon.com/region: ${{ values.region }}
+    backstage.io/source-repo: ${{ values.source_repo_url }}
+  tags:
+    - nodejs
+    - aws
+    - ec2
+    - deployment
+    - ${{ values.environment }}
+  links:
+    - url: ${{ values.source_repo_url }}
+      title: Source Repository
+      icon: github
+spec:
+  type: service
+  lifecycle: ${{ values.environment }}
+  owner: ${{ values.owner }}
+  system: aws-deployments
+  dependsOn:
+    - resource:aws-ec2-instance
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: aws-ec2-instance
+  description: AWS EC2 instance for ${{ values.deployment_name }}
+  annotations:
+    aws.amazon.com/instance-type: ${{ values.instance_type }}
+    aws.amazon.com/region: ${{ values.region }}
+spec:
+  type: compute
+  owner: ${{ values.owner }}
+  system: aws-deployments

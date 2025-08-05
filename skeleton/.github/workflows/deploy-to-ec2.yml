@@ -1,0 +1,181 @@
+name: Deploy to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - destroy
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+      - '.gitignore'
+
+env:
+  AWS_REGION: ${{ values.region }}
+  INSTANCE_TYPE: ${{ values.instance_type }}
+  KEY_PAIR_NAME: ${{ values.key_pair_name }}
+  APP_NAME: ${{ values.deployment_name }}
+  NODE_VERSION: ${{ values.node_version }}
+  APP_PORT: ${{ values.app_port }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action != 'destroy'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        
+    - name: Terraform Init
+      run: |
+        cd terraform
+        terraform init
+        
+    - name: Terraform Plan
+      run: |
+        cd terraform
+        terraform plan -var="instance_type=${{ env.INSTANCE_TYPE }}" \
+                      -var="key_name=${{ env.KEY_PAIR_NAME }}" \
+                      -var="app_name=${{ env.APP_NAME }}" \
+                      -var="region=${{ env.AWS_REGION }}" \
+                      -out=tfplan
+                      
+    - name: Terraform Apply
+      run: |
+        cd terraform
+        terraform apply -auto-approve tfplan
+        
+    - name: Get EC2 Instance IP
+      id: get-ip
+      run: |
+        cd terraform
+        INSTANCE_IP=$(terraform output -raw instance_public_ip)
+        echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
+        echo "Instance IP: $INSTANCE_IP"
+        
+    - name: Wait for Instance to be Ready
+      run: |
+        echo "Waiting for instance to be ready..."
+        sleep 60
+        
+    - name: Deploy Application
+      run: |
+        # Create deployment script
+        cat > deploy.sh << 'DEPLOY_EOF'
+        #!/bin/bash
+        set -e
+        
+        # Update system
+        sudo yum update -y
+        
+        # Install Node.js
+        curl -fsSL https://rpm.nodesource.com/setup_${{ env.NODE_VERSION }}.x | sudo bash -
+        sudo yum install -y nodejs
+        
+        # Install Git
+        sudo yum install -y git
+        
+        # Create app directory
+        sudo mkdir -p /opt/app
+        sudo chown ec2-user:ec2-user /opt/app
+        
+        # Clone the application
+        cd /opt/app
+        git clone ${{ values.source_repo_url }} .
+        
+        # Install dependencies
+        npm install --production
+        
+        # Create systemd service
+        sudo tee /etc/systemd/system/${{ env.APP_NAME }}.service > /dev/null << SERVICE_EOF
+        [Unit]
+        Description=${{ env.APP_NAME }} Node.js App
+        After=network.target
+        
+        [Service]
+        Type=simple
+        User=ec2-user
+        WorkingDirectory=/opt/app
+        ExecStart=/usr/bin/node server.js
+        Restart=on-failure
+        Environment=NODE_ENV=${{ values.environment }}
+        Environment=PORT=${{ env.APP_PORT }}
+        
+        [Install]
+        WantedBy=multi-user.target
+        SERVICE_EOF
+        
+        # Start the service
+        sudo systemctl daemon-reload
+        sudo systemctl enable ${{ env.APP_NAME }}
+        sudo systemctl start ${{ env.APP_NAME }}
+        
+        # Check status
+        sudo systemctl status ${{ env.APP_NAME }}
+        DEPLOY_EOF
+        
+        chmod +x deploy.sh
+        
+        # Copy and execute deployment script on EC2
+        scp -i ~/.ssh/deploy-key -o StrictHostKeyChecking=no deploy.sh ec2-user@${{ steps.get-ip.outputs.instance_ip }}:/tmp/
+        ssh -i ~/.ssh/deploy-key -o StrictHostKeyChecking=no ec2-user@${{ steps.get-ip.outputs.instance_ip }} "chmod +x /tmp/deploy.sh && /tmp/deploy.sh"
+        
+    - name: Application URL
+      run: |
+        echo "🚀 Application deployed successfully!"
+        echo "Application URL: http://${{ steps.get-ip.outputs.instance_ip }}:${{ env.APP_PORT }}"
+        echo "SSH Access: ssh -i your-key.pem ec2-user@${{ steps.get-ip.outputs.instance_ip }}"
+        
+  destroy:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'destroy'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+        
+    - name: Terraform Init
+      run: |
+        cd terraform
+        terraform init
+        
+    - name: Terraform Destroy
+      run: |
+        cd terraform
+        terraform destroy -auto-approve \
+                         -var="instance_type=${{ env.INSTANCE_TYPE }}" \
+                         -var="key_name=${{ env.KEY_PAIR_NAME }}" \
+                         -var="app_name=${{ env.APP_NAME }}" \
+                         -var="region=${{ env.AWS_REGION }}"
