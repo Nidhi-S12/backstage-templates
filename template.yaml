@@ -1,70 +1,152 @@
 apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
-  name: ec2-nodejs-app
-  title: Node.js App on AWS EC2
-  description: Scaffold a Node.js application and deploy it to an AWS EC2 instance
+  name: deploy-nodejs-to-ec2
+  title: Deploy Node.js App to AWS EC2
+  description: Deploy an existing Node.js application to a new AWS EC2 instance
+  tags:
+    - nodejs
+    - aws
+    - ec2
+    - deployment
 spec:
   owner: user:default/guest
   type: service
   parameters:
-    - title: Application Details
+    - title: Application Information
       required:
-        - component_id
+        - app_name
+        - repo_url
         - owner
       properties:
-        component_id:
-          title: Component ID
+        app_name:
+          title: Application Name
           type: string
-          description: Unique identifier for the application
-        owner:
-          title: Owner
-          type: string
-          description: Owner of the application
+          description: Name for your deployed application
+          pattern: '^[a-zA-Z0-9-]+$'
         repo_url:
           title: Repository URL
           type: string
-          description: URL of the Git repository
+          description: URL of your existing Node.js application repository
+          pattern: '^https://github\.com/[^/]+/[^/]+$'
+        owner:
+          title: Owner
+          type: string
+          description: Owner of this deployment
+          default: user:default/guest
+        description:
+          title: Description
+          type: string
+          description: Brief description of your application
+          
     - title: AWS EC2 Configuration
       required:
         - instance_type
-        - ami_id
+        - region
       properties:
         instance_type:
           title: EC2 Instance Type
           type: string
-          description: AWS EC2 instance type (e.g., t2.micro)
+          description: AWS EC2 instance type
           default: t2.micro
-        ami_id:
-          title: AMI ID
+          enum:
+            - t2.micro
+            - t2.small
+            - t2.medium
+            - t3.micro
+            - t3.small
+            - t3.medium
+        region:
+          title: AWS Region
           type: string
-          description: Amazon Machine Image ID (e.g., ami-0c55b159cbfafe1f0 for Amazon Linux 2)
+          description: AWS region for deployment
+          default: us-east-1
+          enum:
+            - us-east-1
+            - us-west-2
+            - eu-west-1
+            - ap-southeast-1
+        key_pair_name:
+          title: Key Pair Name
+          type: string
+          description: AWS Key Pair name for SSH access
+          default: my-key-pair
+          
   steps:
-    - id: template
-      name: Create Application
-      action: fetch:template
+    - id: fetch-repo
+      name: Fetch Application Code
+      action: fetch:plain
       input:
-        url: /skeleton
-        values:
-          component_id: ${{ parameters.component_id }}
-          owner: ${{ parameters.owner }}
-          repo_url: ${{ parameters.repo_url }}
-    - id: publish
-      name: Publish to Git
-      action: publish:github
+        url: ${{ parameters.repo_url }}
+        targetPath: ./app
+        
+    - id: create-deployment-config
+      name: Create Deployment Configuration
+      action: fs:write
       input:
-        allowedHosts: ["github.com"]
-        repoUrl: ${{ parameters.repo_url }}
-        description: Node.js application deployed on AWS EC2
-    - id: provision-ec2
-      name: Provision EC2 Instance
-      action: custom:provision-ec2
+        path: deployment-config.json
+        content: |
+          {
+            "appName": "${{ parameters.app_name }}",
+            "repoUrl": "${{ parameters.repo_url }}",
+            "instanceType": "${{ parameters.instance_type }}",
+            "region": "${{ parameters.region }}",
+            "keyPairName": "${{ parameters.key_pair_name }}",
+            "owner": "${{ parameters.owner }}",
+            "description": "${{ parameters.description }}"
+          }
+          
+    - id: create-catalog-info
+      name: Create Catalog Info
+      action: fs:write
       input:
-        instance_type: ${{ parameters.instance_type }}
-        ami_id: ${{ parameters.ami_id }}
-    - id: register
-      name: Register in Catalog
-      action: catalog:register
+        path: catalog-info.yaml
+        content: |
+          apiVersion: backstage.io/v1alpha1
+          kind: Component
+          metadata:
+            name: ${{ parameters.app_name }}
+            description: ${{ parameters.description || 'Node.js application deployed on AWS EC2' }}
+            tags:
+              - nodejs
+              - aws
+              - ec2
+            annotations:
+              github.com/project-slug: ${{ parameters.repo_url | parseRepoUrl | pick('owner') }}/${{ parameters.repo_url | parseRepoUrl | pick('repo') }}
+              aws.amazon.com/instance-type: ${{ parameters.instance_type }}
+              aws.amazon.com/region: ${{ parameters.region }}
+          spec:
+            type: service
+            lifecycle: production
+            owner: ${{ parameters.owner }}
+            system: aws-deployments
+            
+    - id: log-info
+      name: Log Deployment Information
+      action: debug:log
       input:
-        repoUrl: ${{ parameters.repo_url }}
-        catalogInfoPath: /catalog-info.yaml
+        message: |
+          🚀 Deployment Configuration:
+          - Application: ${{ parameters.app_name }}
+          - Repository: ${{ parameters.repo_url }}
+          - Instance Type: ${{ parameters.instance_type }}
+          - Region: ${{ parameters.region }}
+          - Owner: ${{ parameters.owner }}
+          
+          Next steps would be:
+          1. Provision EC2 instance in ${{ parameters.region }}
+          2. Clone repository: ${{ parameters.repo_url }}
+          3. Install Node.js dependencies
+          4. Start the application
+          5. Configure security groups and networking
+          
+          Note: EC2 provisioning is not implemented yet - this is a demo template.
+
+  output:
+    text:
+      - title: Repository URL
+        content: ${{ parameters.repo_url }}
+      - title: Deployment Region
+        content: ${{ parameters.region }}
+      - title: Instance Type
+        content: ${{ parameters.instance_type }}
