@@ -44,7 +44,7 @@ spec:
       name: Create Application
       action: fetch:template
       input:
-        url: ./skeleton
+        url: /skeleton
         values:
           component_id: ${{ parameters.component_id }}
           owner: ${{ parameters.owner }}
